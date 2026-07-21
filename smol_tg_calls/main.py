@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import os
-import socket
 import wave
-from abc import ABC, abstractmethod
-from io import BytesIO
-from typing import NamedTuple, Self, Awaitable, TypeVar
 from hashlib import sha256, sha1
+from io import BytesIO
+from typing import NamedTuple
 
 import opuslib
-import tgcrypto
 from pyrogram import Client
 from pyrogram.raw.functions.messages import GetDhConfig
 from pyrogram.raw.functions.phone import RequestCall, ConfirmCall
@@ -18,7 +15,12 @@ from pyrogram.raw.types import InputPhoneCall, UpdatePhoneCall, PhoneCallAccepte
     PhoneCall, UpdatePhoneCallSignalingData
 from pyrogram.raw.types.phone import PhoneCall as PhonePhoneCall
 
-from .aioudp import RemoteEndpoint, open_remote_endpoint
+from .aioudp import open_remote_endpoint
+from .crypto import decrypt, EncryptionX, encrypt
+from .packets import Packet, PacketHeader, PacketInit, PacketInitAck, PacketPing, PacketPong, PacketStreamData
+from .packets.init_ack import Stream
+from .udp_endpoint import UdpEndpoint
+from .utils import coro_with_additional_return
 
 
 class DhStuff(NamedTuple):
@@ -52,455 +54,6 @@ def _make_protocol(version: str | list[str]) -> PhoneCallProtocol:
         udp_p2p=False,
         udp_reflector=True,
     )
-
-
-def kdf(msg_key: bytes, key: bytes, x: int, ctr: bool) -> tuple[bytes, bytes]:
-    sha256_a = sha256(msg_key + key[x:x + 36]).digest()
-    sha256_b = sha256(key[40 + x:40 + x + 36] + msg_key).digest()
-    aes_key = sha256_a[0:0 + 8] + sha256_b[8:8 + 16] + sha256_a[24:24 + 8]
-    if ctr:
-        aes_iv = sha256_b[0:0 + 4] + sha256_a[8:8 + 8] + sha256_b[24:24 + 4]
-    else:
-        aes_iv = sha256_b[0:0 + 8] + sha256_a[8:8 + 16] + sha256_b[24:24 + 8]
-
-    return aes_key, aes_iv
-
-
-class EncryptionX:
-    OUT_TRANSPORT = 0
-    IN_TRANSPORT = 8
-    OUT_SIGNALING = 128
-    IN_SIGNALING = 136
-
-
-def encrypt(data: bytes, key: bytes, x: int, ctr: bool = False, ctr_value: int = 0) -> bytes:
-    msg_key_large = sha256(key[88 + x:88 + x + 32] + data).digest()
-    msg_key = msg_key_large[8:8 + 16]
-
-    aes_key, aes_iv = kdf(msg_key, key, x, ctr)
-
-    if ctr:
-        state = bytearray(1)
-        state[0] = ctr_value
-        encrypted = tgcrypto.ctr256_encrypt(data, aes_key, aes_iv, state)
-    else:
-        encrypted = tgcrypto.ige256_encrypt(data, aes_key, aes_iv)
-
-    return msg_key + encrypted
-
-
-def decrypt(data: bytes, key: bytes, x: int, ctr: bool = False, ctr_value: int = 0) -> tuple[bytes, bool]:
-    msg_key, data = data[:16], data[16:]
-
-    aes_key, aes_iv = kdf(msg_key, key, x, ctr)
-
-    if ctr:
-        state = bytearray(1)
-        state[0] = ctr_value
-        decrypted = tgcrypto.ctr256_decrypt(data, aes_key, aes_iv, state)
-    else:
-        decrypted = tgcrypto.ige256_decrypt(data, aes_key, aes_iv)
-
-    check_msg_key_large = sha256(key[88 + x:88 + x + 32] + decrypted).digest()
-    check_msg_key = check_msg_key_large[8:8 + 16]
-
-    return decrypted, msg_key == check_msg_key
-
-
-T1 = TypeVar("T1")
-T2 = TypeVar("T2")
-
-
-async def coro_with_additional_return(coro: Awaitable[T1], add: T2) -> tuple[T1, T2]:
-    return await coro, add
-
-
-class UdpEndpoint:
-    def __init__(self, sock: RemoteEndpoint, peer_tag: bytes) -> None:
-        self.sock = sock
-        self.peer_tag = peer_tag
-
-    def send(self, data: bytes) -> None:
-        self.sock.send(self.peer_tag + data)
-
-    async def receive(self) -> bytes:
-        data = await self.sock.receive()
-        assert data.startswith(self.peer_tag)
-        return data[len(self.peer_tag):]
-
-    async def get_self_info(self) -> None:
-        self.send(
-            b""
-            + b"\xff" * 12
-            + b"\xfe"
-            + b"\xff" * 3
-            + (123).to_bytes(8, "little", signed=False)
-        )
-        self_info = await self.receive()
-        reader = BytesIO(self_info)
-        assert reader.read(12) == b"\xff" * 12
-
-        reflector_constructor = int.from_bytes(reader.read(4), "little", signed=False)
-        reflector_time = int.from_bytes(reader.read(4), "little", signed=False)
-        reflector_query_id = int.from_bytes(reader.read(8), "little", signed=False)
-        reflector_address = reader.read(16)
-        reflector_port = int.from_bytes(reader.read(4), "little", signed=False)
-
-        print(f"Reflector constructor: {hex(reflector_constructor)}")
-        print(f"Reflector time: {reflector_time}")
-        print(f"Reflector query id: {reflector_query_id}")
-        print(f"Reflector our address raw: {reflector_address}")
-        if reflector_constructor == 0xc01572c7:
-            print(f"Reflector our address: {socket.inet_ntoa(reflector_address[-4:])}")
-        print(f"Reflector our port: {reflector_port}")
-        print(f"Leftover bytes: {reader.read()}")
-        print("=" * 32)
-
-
-class SlotsRepr:
-    __slots__ = ()
-
-    def __repr__(self) -> str:
-        slots = set()
-        for cls in self.__class__.mro():
-            slots.update(getattr(cls, "__slots__", ()))
-
-        fields = ", ".join([f"{slot}={getattr(self, slot)!r}" for slot in slots])
-        return f"{self.__class__.__name__}({fields})"
-
-
-class IdkPacketHeader(SlotsRepr):
-    __slots__ = ("length", "packet_type", "remote_seq", "seq", "acks", "flags",)
-
-    def __init__(
-            self, *, packet_type: int, remote_seq: int, seq: int, acks: int, length: int = 0, flags: int = 0,
-    ) -> None:
-        self.length = length
-        self.packet_type = packet_type
-        self.remote_seq = remote_seq
-        self.seq = seq
-        self.acks = acks
-        self.flags = flags
-
-    @classmethod
-    def read(cls, data: BytesIO) -> IdkPacketHeader:
-        return IdkPacketHeader(
-            length=int.from_bytes(data.read(2), "little", signed=False),
-            packet_type=int.from_bytes(data.read(1), "little", signed=False),
-            remote_seq=int.from_bytes(data.read(4), "little", signed=False),
-            seq=int.from_bytes(data.read(4), "little", signed=False),
-            acks=int.from_bytes(data.read(4), "little", signed=False),
-            flags=int.from_bytes(data.read(1), "little", signed=False),
-        )
-
-    def write(self) -> bytes:
-        return b"".join([
-            self.length.to_bytes(2, "little", signed=False),
-            self.packet_type.to_bytes(1),
-            self.remote_seq.to_bytes(4, "little", signed=False),
-            self.seq.to_bytes(4, "little", signed=False),
-            self.acks.to_bytes(4, "little", signed=False),
-            self.flags.to_bytes(1),
-        ])
-
-
-class IdkPacket(SlotsRepr):
-    __slots__ = ("header", "payload",)
-
-    def __init__(self, header: IdkPacketHeader, payload: IdkPacketPayload | bytes) -> None:
-        self.header = header
-        self.payload = payload
-
-    @classmethod
-    def read(cls, data: BytesIO) -> IdkPacket:
-        header = IdkPacketHeader.read(data)
-        payload = data.read(header.length - 16)
-        if header.packet_type == 1:
-            payload = IdkPacketInit.read(BytesIO(payload))
-        elif header.packet_type == 2:
-            payload = IdkPacketInitAck.read(BytesIO(payload))
-        elif header.packet_type == 4:
-            payload = IdkPacketStreamData.read(BytesIO(payload))
-        elif header.packet_type == 6:
-            payload = IdkPacketPing.read(BytesIO(payload))
-        elif header.packet_type == 7:
-            payload = IdkPacketPong.read(BytesIO(payload))
-
-        return IdkPacket(header, payload)
-
-    def write(self, pad: bool = False) -> bytes:
-        if isinstance(self.payload, IdkPacketPayload):
-            self.header.packet_type = self.payload.PACKET_TYPE
-            payload_bytes = self.payload.write()
-        else:
-            payload_bytes = self.payload
-        self.header.length = 16 + len(payload_bytes)
-        result = self.header.write() + payload_bytes
-        if pad and self.header.length % 16 != 0:
-            padding = (-len(result)) % 16
-            if padding < 16:
-                padding += 16
-            result += os.urandom(padding)
-        return result
-
-
-class IdkPacketPayload(ABC, SlotsRepr):
-    PACKET_TYPE: int
-
-    __slots__ = ()
-
-    @classmethod
-    @abstractmethod
-    def read(cls, data: BytesIO) -> Self:
-        ...
-
-    @abstractmethod
-    def write(self) -> bytes:
-        ...
-
-
-class IdkPacketInit(IdkPacketPayload):
-    PACKET_TYPE = 1
-
-    __slots__ = ("version", "min_version", "flags", "audio_streams", "video_streams",)
-
-    def __init__(
-            self, version: int, min_version: int, flags: int, audio_streams: list[int], video_streams: list[int],
-    ) -> None:
-        self.version = version
-        self.min_version = min_version
-        self.flags = flags
-        self.audio_streams = audio_streams
-        self.video_streams = video_streams
-
-    @classmethod
-    def read(cls, data: BytesIO) -> IdkPacketInit:
-        version = int.from_bytes(data.read(4), "little", signed=False)
-        min_version = int.from_bytes(data.read(4), "little", signed=False)
-        flags = int.from_bytes(data.read(4), "little", signed=False)
-        audio_streams_count = int.from_bytes(data.read(1))
-        audio_streams = [
-            int.from_bytes(data.read(4), "little", signed=False)
-            for _ in range(audio_streams_count)
-        ]
-        video_streams_count = int.from_bytes(data.read(1))
-        video_streams = [
-            int.from_bytes(data.read(4), "little", signed=False)
-            for _ in range(video_streams_count)
-        ]
-        data.read(1)
-
-        return cls(
-            version=version,
-            min_version=min_version,
-            flags=flags,
-            audio_streams=audio_streams,
-            video_streams=video_streams,
-        )
-
-    def write(self) -> bytes:
-        return b"".join([
-            self.version.to_bytes(4, "little", signed=False),
-            self.min_version.to_bytes(4, "little", signed=False),
-            self.flags.to_bytes(4, "little", signed=False),
-            len(self.audio_streams).to_bytes(1),
-            b"".join((
-                stream.to_bytes(4, "little", signed=False)
-                for stream in self.audio_streams
-            )),
-            len(self.video_streams).to_bytes(1),
-            b"".join((
-                stream.to_bytes(4, "little", signed=False)
-                for stream in self.video_streams
-            )),
-            b"\x00",  # TODO: what is this?
-        ])
-
-
-class IdkStream(IdkPacketPayload):
-    PACKET_TYPE = 256
-
-    __slots__ = ("id", "type", "codec", "frame_duration", "enabled",)
-
-    def __init__(
-            self, stream_id: int, stream_type: int, codec: int, frame_duration: int, enabled: int,
-    ) -> None:
-        self.id = stream_id
-        self.type = stream_type
-        self.codec = codec
-        self.frame_duration = frame_duration
-        self.enabled = enabled
-
-    @classmethod
-    def read(cls, data: BytesIO) -> IdkStream:
-        stream_id = int.from_bytes(data.read(1))
-        stream_type = int.from_bytes(data.read(1))
-        codec = int.from_bytes(data.read(4))
-        frame_duration = int.from_bytes(data.read(2), "little", signed=False)
-        enabled = int.from_bytes(data.read(1))
-
-        return cls(
-            stream_id=stream_id,
-            stream_type=stream_type,
-            codec=codec,
-            frame_duration=frame_duration,
-            enabled=enabled,
-        )
-
-    def write(self) -> bytes:
-        return b"".join([
-            self.id.to_bytes(1),
-            self.type.to_bytes(1),
-            self.codec.to_bytes(4),
-            self.frame_duration.to_bytes(2, "little", signed=False),
-            self.enabled.to_bytes(1),
-        ])
-
-
-class IdkPacketInitAck(IdkPacketPayload):
-    PACKET_TYPE = 2
-
-    __slots__ = ("version", "min_version", "streams",)
-
-    def __init__(
-            self, version: int, min_version: int, streams: list[IdkStream],
-    ) -> None:
-        self.version = version
-        self.min_version = min_version
-        self.streams = streams
-
-    @classmethod
-    def read(cls, data: BytesIO) -> IdkPacketInitAck:
-        version = int.from_bytes(data.read(4), "little", signed=False)
-        min_version = int.from_bytes(data.read(4), "little", signed=False)
-        streams_count = int.from_bytes(data.read(1))
-        streams = [
-            IdkStream.read(data)
-            for _ in range(streams_count)
-        ]
-
-        return cls(
-            version=version,
-            min_version=min_version,
-            streams=streams,
-        )
-
-    def write(self) -> bytes:
-        return b"".join([
-            self.version.to_bytes(4, "little", signed=False),
-            self.min_version.to_bytes(4, "little", signed=False),
-            len(self.streams).to_bytes(1),
-            b"".join((
-                stream.write()
-                for stream in self.streams
-            )),
-        ])
-
-
-class IdkPacketStreamData(IdkPacketPayload):
-    PACKET_TYPE = 4
-
-    __slots__ = ("stream_id", "pts", "extra_fec", "keyframe", "fragment_index", "fragment_count", "data",)
-
-    def __init__(
-            self, stream_id: int, pts: int, extra_fec: bool, keyframe: bool,
-            fragment_index: int | None, fragment_count: int | None, data: bytes,
-    ) -> None:
-        self.stream_id = stream_id
-        self.pts = pts
-        self.extra_fec = extra_fec
-        self.keyframe = keyframe
-        self.fragment_index = fragment_index
-        self.fragment_count = fragment_count
-        self.data = data
-
-    @classmethod
-    def read(cls, data: BytesIO) -> IdkPacketStreamData:
-        stream_id = int.from_bytes(data.read(1))
-        flags = stream_id & 0xc0
-        stream_id &= 0x3f
-        if flags & 0x40:
-            sdlen = int.from_bytes(data.read(2), "little", signed=False)
-        else:
-            sdlen = int.from_bytes(data.read(1), signed=False)
-        pts = int.from_bytes(data.read(4), "little", signed=False)
-        fragmented = bool(sdlen & (1 << 14))
-        extra_fec = bool(sdlen & (1 << 13))
-        keyframe = bool(sdlen & (1 << 15))
-        fragment_index = fragment_count = None
-        if fragmented:
-            fragment_index = int.from_bytes(data.read(1))
-            fragment_count = int.from_bytes(data.read(1))
-        sdlen &= 0x0f77
-        media = data.read(sdlen)
-        return cls(
-            stream_id=stream_id,
-            pts=pts,
-            extra_fec=extra_fec,
-            keyframe=keyframe,
-            fragment_index=fragment_index,
-            fragment_count=fragment_count,
-            data=media,
-        )
-
-    def write(self) -> bytes:
-        sdlen = len(self.data)
-        fragment_idx_cnt = b""
-        if self.fragment_index and self.fragment_count:
-            fragment_idx_cnt = (
-                    self.fragment_index.to_bytes(1, signed=False)
-                    + self.fragment_count.to_bytes(1, signed=False)
-            )
-            sdlen |= 1 << 14
-        if self.extra_fec:
-            sdlen |= 1 << 13
-        if self.keyframe:
-            sdlen |= 1 << 15
-        stream_id = self.stream_id
-        if sdlen > 255:
-            stream_id |= 0x40
-
-        return (
-                b""
-                + stream_id.to_bytes(1, signed=False)
-                + sdlen.to_bytes(2 if sdlen > 255 else 1, "little", signed=False)
-                + self.pts.to_bytes(4, "little", signed=False)
-                + fragment_idx_cnt
-                + self.data
-        )
-
-
-class IdkPacketPing(IdkPacketPayload):
-    PACKET_TYPE = 6
-
-    __slots__ = ()
-
-    def __init__(self) -> None:
-        ...
-
-    @classmethod
-    def read(cls, data: BytesIO) -> IdkPacketPing:
-        return cls()
-
-    def write(self) -> bytes:
-        return b""
-
-
-class IdkPacketPong(IdkPacketPayload):
-    PACKET_TYPE = 7
-
-    __slots__ = ("out_seq",)
-
-    def __init__(self, out_seq: int) -> None:
-        self.out_seq = out_seq
-
-    @classmethod
-    def read(cls, data: BytesIO) -> IdkPacketPong:
-        out_seq = int.from_bytes(data.read(4), "little", signed=False)
-        return cls(out_seq=out_seq)
-
-    def write(self) -> bytes:
-        return self.out_seq.to_bytes(4, "little", signed=False)
 
 
 SAMPLE_RATE = 48000
@@ -553,7 +106,7 @@ class CallIdk_v2_4_4:
             g_b = int.from_bytes(update.phone_call.g_b, "big", signed=False)
             self.key = key = pow(g_b, self.dh.a, self.dh.prime).to_bytes(256, "big", signed=False)
 
-            dec = client.on_raw_update()(self._handle_signaling_update)
+            client.on_raw_update()(self._handle_signaling_update)
 
             self.call = await client.invoke(ConfirmCall(
                 peer=self._make_input_call(),
@@ -589,14 +142,14 @@ class CallIdk_v2_4_4:
         assert self.key is not None
 
         self.seq += 1
-        packet_to_send = IdkPacket(
-            header=IdkPacketHeader(
+        packet_to_send = Packet(
+            header=PacketHeader(
                 packet_type=0,
                 remote_seq=self.remote_seq,
                 seq=self.seq,
                 acks=0,
             ),
-            payload=IdkPacketInit(
+            payload=PacketInit(
                 version=9,
                 min_version=9,
                 flags=0,
@@ -612,18 +165,18 @@ class CallIdk_v2_4_4:
         assert self.key is not None
 
         self.seq += 1
-        packet_to_send = IdkPacket(
-            header=IdkPacketHeader(
+        packet_to_send = Packet(
+            header=PacketHeader(
                 packet_type=0,
                 remote_seq=self.remote_seq,
                 seq=self.seq,
                 acks=0,
             ),
-            payload=IdkPacketInitAck(
+            payload=PacketInitAck(
                 version=9,
                 min_version=9,
                 streams=[
-                    IdkStream(
+                    Stream(
                         stream_id=1,
                         stream_type=1,
                         codec=self.OPUS,
@@ -641,14 +194,14 @@ class CallIdk_v2_4_4:
         assert self.key is not None
 
         self.seq += 1
-        packet_to_send = IdkPacket(
-            header=IdkPacketHeader(
+        packet_to_send = Packet(
+            header=PacketHeader(
                 packet_type=0,
                 remote_seq=self.remote_seq,
                 seq=self.seq,
                 acks=0,
             ),
-            payload=IdkPacketPing()
+            payload=PacketPing()
         )
         print(f"sending: {packet_to_send}")
         to_send = packet_to_send.write(True)
@@ -658,25 +211,25 @@ class CallIdk_v2_4_4:
         assert self.key is not None
 
         self.seq += 1
-        packet_to_send = IdkPacket(
-            header=IdkPacketHeader(
+        packet_to_send = Packet(
+            header=PacketHeader(
                 packet_type=0,
                 remote_seq=self.remote_seq,
                 seq=self.seq,
                 acks=0,
             ),
-            payload=IdkPacketPong(self.remote_seq)
+            payload=PacketPong(self.remote_seq)
         )
         print(f"sending: {packet_to_send}")
         to_send = packet_to_send.write(True)
         self._send_to_all(encrypt(to_send, self.key, EncryptionX.OUT_TRANSPORT))
 
-    def _send_stream_data(self, data: IdkPacketStreamData) -> None:
+    def _send_stream_data(self, data: PacketStreamData) -> None:
         assert self.key is not None
 
         self.seq += 1
-        packet_to_send = IdkPacket(
-            header=IdkPacketHeader(
+        packet_to_send = Packet(
+            header=PacketHeader(
                 packet_type=0,
                 remote_seq=self.remote_seq,
                 seq=self.seq,
@@ -693,7 +246,7 @@ class CallIdk_v2_4_4:
         if self.sending_audio >= len(opus_frames):
             return
 
-        self._send_stream_data(IdkPacketStreamData(
+        self._send_stream_data(PacketStreamData(
             stream_id=1,
             pts=60 * self.sending_audio,
             extra_fec=False,
@@ -714,7 +267,7 @@ class CallIdk_v2_4_4:
         if not valid:
             print(f"Decrypted (valid={valid}) (len={len(decrypted)}): {decrypted}")
             return
-        packet = IdkPacket.read(BytesIO(decrypted))
+        packet = Packet.read(BytesIO(decrypted))
         if packet.header.seq <= self.remote_seq:
             return
         self.remote_seq = packet.header.seq
@@ -722,13 +275,13 @@ class CallIdk_v2_4_4:
         print(f"received: {packet!r}")
         payload = packet.payload
 
-        if isinstance(payload, IdkPacketInit):
+        if isinstance(payload, PacketInit):
             self._send_init_ack()
-        elif isinstance(payload, IdkPacketInitAck):
+        elif isinstance(payload, PacketInitAck):
             self._send_init()
-        elif isinstance(payload, IdkPacketPing):
+        elif isinstance(payload, PacketPing):
             self._send_pong()
-        elif isinstance(payload, IdkPacketStreamData):
+        elif isinstance(payload, PacketStreamData):
             if self.sending_audio is None:
                 self.sending_audio = 0
                 asyncio.get_running_loop().call_later(0.060, self._send_audio_frame)
