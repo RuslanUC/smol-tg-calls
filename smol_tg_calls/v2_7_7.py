@@ -298,6 +298,8 @@ class CallIdk_v2_7_7o:
         packet.seq = self.seq
         self.seq += 1
 
+        print(f"sending: {packet}")
+
         await client.invoke(SendSignalingData(
             peer=self._make_input_call(),
             data=encrypt(packet.write(), self.key, EncryptionX.OUT_SIGNALING, ctr=True),
@@ -377,7 +379,11 @@ class CallIdk_v2_7_7o:
             LegacySignalingPacket(
                 seq=0,
                 payload=CandidatesListMessage(
-                    candidates=[f"candidate:{candidate.to_sdp()}" for candidate in conn.local_candidates],
+                    candidates=[
+                        f"candidate:{candidate.to_sdp()}"
+                        for candidate in conn.local_candidates
+                        if candidate.type == "relay"
+                    ],
                     ufrag=conn.local_username,
                     pwd=conn.local_password,
                 ),
