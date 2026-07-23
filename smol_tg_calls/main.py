@@ -5,7 +5,8 @@ import os
 
 from pyrogram import Client
 
-from .v2_4_4 import _call_outgoing_v2_4_4
+# from .v2_4_4 import _call_outgoing_v2_4_4
+from smol_tg_calls.v2_7_7 import _call_outgoing_v2_7_7
 
 
 async def main() -> None:
@@ -14,7 +15,7 @@ async def main() -> None:
             api_id=int(os.environ["API_ID"]),
             api_hash=os.environ["API_HASH"],
     ) as client:
-        await _call_outgoing_v2_4_4(client)
+        await _call_outgoing_v2_7_7(client)
         await asyncio.sleep(300)
 
 

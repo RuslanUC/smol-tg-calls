@@ -9,9 +9,9 @@ from pyrogram.raw.functions.messages import GetDhConfig
 class DhStuff(NamedTuple):
     prime: int
     gen: int
-    a: int
-    g_a: bytes
-    g_a_hash: bytes
+    x: int
+    g_x: bytes
+    g_x_hash: bytes
 
 
 async def do_all_dh_stuff(client: Client) -> DhStuff:

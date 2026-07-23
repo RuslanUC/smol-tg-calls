@@ -3,6 +3,7 @@ name = "smol-tg-calls"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
+    "aiortc>=1.15.0",
     "opuslib>=3.0.1",
     "pyrogram>=2.0.106",
     "tgcrypto>=1.2.5",
