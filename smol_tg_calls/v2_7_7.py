@@ -5,6 +5,7 @@ import os
 import struct
 import wave
 from abc import ABC
+from enum import IntEnum
 from hashlib import sha256, sha1
 from io import BytesIO
 from typing import NamedTuple, Self
@@ -70,6 +71,16 @@ class LegacySignalingPacket(PacketBase):
                 payload = CandidatesListMessage.read(data)
             elif packet_type == 2:
                 payload = VideoFormatsMessage.read(data)
+            elif packet_type == 3:
+                payload = RequestVideoMessage.read(data)
+            elif packet_type == 4:
+                payload = RemoteMediaStateMessage.read(data)
+            elif packet_type == 8:
+                payload = VideoParametersMessage.read(data)
+            elif packet_type == 9:
+                payload = RemoteBatteryLevelIsLowMessage.read(data)
+            elif packet_type == 10:
+                payload = RemoteNetworkStatusMessage.read(data)
             elif packet_type == 254:
                 payload = EmptyMessage.read(data)
             elif packet_type == 255:
@@ -211,6 +222,124 @@ class VideoFormatsMessage(LegacySignalingPacketMessage):
         return b"".join(chunks)
 
 
+class RequestVideoMessage(LegacySignalingPacketMessage):
+    PACKET_TYPE = 3
+    REQUIRES_ACK = True
+
+    __slots__ = ()
+
+    def __init__(self) -> None:
+        ...
+
+    @classmethod
+    def read(cls, data: BytesIO) -> RequestVideoMessage:
+        return RequestVideoMessage()
+
+    def write(self) -> bytes:
+        return b""
+
+
+class RemoteVideoState(IntEnum):
+    INACTIVE = 0
+    PAUSED = 1
+    ACTIVE = 2
+
+
+class RemoteAudioState(IntEnum):
+    MUTED = 0
+    ACTIVE = 1
+
+
+class RemoteMediaStateMessage(LegacySignalingPacketMessage):
+    PACKET_TYPE = 4
+    REQUIRES_ACK = True
+
+    __slots__ = ("video_state", "audio_state",)
+
+    def __init__(self, video_state: RemoteVideoState, audio_state: RemoteAudioState) -> None:
+        self.video_state = video_state
+        self.audio_state = audio_state
+
+    @classmethod
+    def read(cls, data: BytesIO) -> RemoteMediaStateMessage:
+        state = uint_be_from_bytes(data.read(1))
+        audio = RemoteAudioState(state & 0b01)
+        video = RemoteVideoState((state >> 1) & 0b11)
+        return RemoteMediaStateMessage(
+            video_state=video,
+            audio_state=audio,
+        )
+
+    def write(self) -> bytes:
+        return u8be_to_bytes((self.video_state.value << 1) | (self.audio_state.value << 1))
+
+
+class VideoParametersMessage(LegacySignalingPacketMessage):
+    PACKET_TYPE = 8
+    REQUIRES_ACK = True
+
+    __slots__ = ("aspect_ratio",)
+
+    def __init__(self, aspect_ratio: int) -> None:
+        self.aspect_ratio = aspect_ratio
+
+    @classmethod
+    def read(cls, data: BytesIO) -> VideoParametersMessage:
+        aspect_ratio = uint_be_from_bytes(data.read(4))
+        return VideoParametersMessage(
+            aspect_ratio=aspect_ratio,
+        )
+
+    def write(self) -> bytes:
+        return u32be_to_bytes(self.aspect_ratio)
+
+
+class RemoteBatteryLevelIsLowMessage(LegacySignalingPacketMessage):
+    PACKET_TYPE = 9
+    REQUIRES_ACK = True
+
+    __slots__ = ("battery_low",)
+
+    def __init__(self, battery_low: bool) -> None:
+        self.battery_low = battery_low
+
+    @classmethod
+    def read(cls, data: BytesIO) -> RemoteBatteryLevelIsLowMessage:
+        battery_low = uint_be_from_bytes(data.read(1)) != 0
+        return RemoteBatteryLevelIsLowMessage(
+            battery_low=battery_low,
+        )
+
+    def write(self) -> bytes:
+        return u8be_to_bytes(int(self.battery_low))
+
+
+class RemoteNetworkStatusMessage(LegacySignalingPacketMessage):
+    PACKET_TYPE = 10
+    REQUIRES_ACK = True
+
+    __slots__ = ("is_low_cost", "is_low_data_requested",)
+
+    def __init__(self, is_low_cost: bool, is_low_data_requested: bool) -> None:
+        self.is_low_cost = is_low_cost
+        self.is_low_data_requested = is_low_data_requested
+
+    @classmethod
+    def read(cls, data: BytesIO) -> RemoteNetworkStatusMessage:
+        is_low_cost = uint_be_from_bytes(data.read(1)) != 0
+        is_low_data_requested = uint_be_from_bytes(data.read(1)) != 0
+        return RemoteNetworkStatusMessage(
+            is_low_cost=is_low_cost,
+            is_low_data_requested=is_low_data_requested,
+        )
+
+    def write(self) -> bytes:
+        return b"".join([
+            u8be_to_bytes(int(self.is_low_cost)),
+            u8be_to_bytes(int(self.is_low_data_requested)),
+        ])
+
+
 class EmptyMessage(LegacySignalingPacketMessage):
     PACKET_TYPE = 254
     REQUIRES_ACK = False
@@ -318,6 +447,8 @@ class CallIdk_v2_7_7o:
             print(f"Received from component {component}: {data}")
             decrypted, valid = decrypt(data, self.key, x=EncryptionX.IN_TRANSPORT, ctr=True, ctr_value=0)
             print(f"  decrypted (valid={valid}): {decrypted}")
+            packets = LegacySignalingPacket.read(BytesIO(decrypted))
+            print(packets)
 
     def _ice_connected_callback(self, _: asyncio.Task) -> None:
         task = asyncio.create_task(self._ice_connected())
