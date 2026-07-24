@@ -17,6 +17,9 @@ class UdpEndpoint:
         assert data.startswith(self.peer_tag)
         return data[len(self.peer_tag):]
 
+    def close(self) -> None:
+        self.sock.close()
+
     async def get_self_info(self) -> None:
         self.send(
             b""
