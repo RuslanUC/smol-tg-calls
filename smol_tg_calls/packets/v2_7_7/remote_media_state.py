@@ -39,4 +39,4 @@ class RemoteMediaStateMessage(LegacySignalingPacketMessage):
         )
 
     def write(self) -> bytes:
-        return u8be_to_bytes((self.video_state.value << 1) | (self.audio_state.value << 1))
+        return u8be_to_bytes((self.video_state.value << 1) | self.audio_state.value)
