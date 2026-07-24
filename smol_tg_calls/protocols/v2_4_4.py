@@ -41,6 +41,7 @@ def decoder_worker(
 
         decoder, encoded_frame, output_q = task
         for frame in decoder.decode(encoded_frame):
+            # print(f"decoded {frame}")
             # pass the decoded frame to the track
             asyncio.run_coroutine_threadsafe(output_q.put(frame), loop)
 
@@ -77,6 +78,7 @@ class PhoneCallProtocolV2_4_4(PhoneCallProtocol):
         self.worker_queue = queue.Queue()
         self.opus_queue = asyncio.Queue()
         self.opus_decoder = OpusDecoder(60)
+        self.jitter_buffer = JitterBuffer(capacity=16, prefetch=4)
         self.worker_thread: Thread = Thread(target=decoder_worker, args=(asyncio.get_running_loop(), self.worker_queue))
 
     async def start(self, connections: list[PhoneConnection | PhoneConnectionWebrtc]) -> None:
@@ -289,14 +291,19 @@ class PhoneCallProtocolV2_4_4(PhoneCallProtocol):
         elif isinstance(payload, PacketPing):
             self._send_pong()
         elif isinstance(payload, PacketStreamData):
-            self.worker_queue.put_nowait((self.opus_decoder, JitterFrame(payload.data, payload.pts), self.opus_queue))
-            # self.jitter_buffer.add(RtpPacket(
-            #     payload_type=111,
-            #     sequence_number=packet.header.seq,
-            #     timestamp=payload.pts,
-            #     ssrc=payload.stream_id,
-            #     payload=payload.data,
-            # ))
+            # self.worker_queue.put_nowait((self.opus_decoder, JitterFrame(payload.data, payload.pts), self.opus_queue))
+            # This probably makes sense, idk?
+            rtp_packet = RtpPacket(
+                payload_type=111,
+                sequence_number=packet.header.seq,
+                timestamp=payload.pts,
+                ssrc=payload.stream_id,
+                payload=payload.data,
+            )
+            rtp_packet._data = payload.data
+            _, frame = self.jitter_buffer.add(rtp_packet)
+            if frame is not None:
+                self.worker_queue.put_nowait((self.opus_decoder, frame, self.opus_queue))
 
             # if self.sending_audio is None:
             #     if self.opus_frames is None:
