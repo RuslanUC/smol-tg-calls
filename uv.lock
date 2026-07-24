@@ -4,23 +4,12 @@ requires-python = ">=3.11"
 
 [[package]]
 name = "aioice"
-source = { directory = "../aioice-multiple-stun-turn" }
+version = "0.10.2"
+source = { git = "https://github.com/RuslanUC/aioice.git?rev=multiple-stun-turn-servers#4d755b20f2aa621b0b2625c58fa03f08e68636a8" }
 dependencies = [
     { name = "dnspython" },
     { name = "ifaddr" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "coverage", extras = ["toml"], marker = "extra == 'dev'", specifier = ">=7.2.2" },
-    { name = "dnspython", specifier = ">=2.0.0" },
-    { name = "ifaddr", specifier = ">=0.2.0" },
-    { name = "mypy", marker = "extra == 'dev'" },
-    { name = "pyopenssl", marker = "extra == 'dev'" },
-    { name = "ruff", marker = "extra == 'dev'" },
-    { name = "websockets", marker = "extra == 'dev'" },
-]
-provides-extras = ["dev"]
 
 [[package]]
 name = "aiortc"
@@ -374,7 +363,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aioice", directory = "../aioice-multiple-stun-turn" },
+    { name = "aioice", git = "https://github.com/RuslanUC/aioice.git?rev=multiple-stun-turn-servers" },
     { name = "aiortc", specifier = ">=1.15.0" },
     { name = "opuslib", specifier = ">=3.0.1" },
     { name = "pyrogram", specifier = ">=2.0.106" },

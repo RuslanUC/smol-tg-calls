@@ -11,4 +11,4 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-aioice = { path = "../aioice-multiple-stun-turn" }
+aioice = { git = "https://github.com/RuslanUC/aioice.git", rev = "multiple-stun-turn-servers" }
