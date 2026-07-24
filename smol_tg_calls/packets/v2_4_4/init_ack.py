@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from io import BytesIO
 
-from .base import PacketPayloadBase, PacketBase
-from ..utils import uint_le_from_bytes, u8le_to_bytes, u32le_to_bytes, u16le_to_bytes
+from smol_tg_calls.packets.base import PacketPayloadBase, PacketBase
+from smol_tg_calls.utils import uint_le_from_bytes, u8le_to_bytes, u32le_to_bytes, u16le_to_bytes
 
 
 class Stream(PacketBase):

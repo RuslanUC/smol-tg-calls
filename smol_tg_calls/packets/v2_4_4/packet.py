@@ -3,13 +3,13 @@ from __future__ import annotations
 import os
 from io import BytesIO
 
-from .base import PacketBase, PacketPayloadBase
-from .header import PacketHeader
-from .init import PacketInit
-from .init_ack import PacketInitAck
-from .ping import PacketPing
-from .pong import PacketPong
-from .stream_data import PacketStreamData
+from smol_tg_calls.packets.base import PacketBase, PacketPayloadBase
+from smol_tg_calls.packets.v2_4_4.header import PacketHeader
+from smol_tg_calls.packets.v2_4_4.init import PacketInit
+from smol_tg_calls.packets.v2_4_4.init_ack import PacketInitAck
+from smol_tg_calls.packets.v2_4_4.ping import PacketPing
+from smol_tg_calls.packets.v2_4_4.pong import PacketPong
+from smol_tg_calls.packets.v2_4_4.stream_data import PacketStreamData
 
 
 class Packet(PacketBase):

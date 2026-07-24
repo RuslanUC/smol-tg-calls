@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 
-from .base import PacketPayloadBase
+from smol_tg_calls.packets.base import PacketPayloadBase
 
 
 class PacketPing(PacketPayloadBase):

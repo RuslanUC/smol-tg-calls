@@ -2,379 +2,24 @@ from __future__ import annotations
 
 import asyncio
 import os
-import struct
-import wave
-from abc import ABC
-from enum import IntEnum
-from hashlib import sha256, sha1
+from hashlib import sha1
 from io import BytesIO
-from typing import NamedTuple, Self
 
 import aioice
-import opuslib
-from aiortc import RTCPeerConnection, RTCConfiguration, RTCIceServer
 from pyrogram import Client
-from pyrogram.raw.functions.messages import GetDhConfig
 from pyrogram.raw.functions.phone import RequestCall, ConfirmCall, SendSignalingData, AcceptCall
-from pyrogram.raw.types import InputPhoneCall, UpdatePhoneCall, PhoneCallAccepted, PhoneCallProtocol, PhoneConnection, \
+from pyrogram.raw.types import InputPhoneCall, UpdatePhoneCall, PhoneCallAccepted, PhoneConnection, \
     PhoneCall, UpdatePhoneCallSignalingData, PhoneConnectionWebrtc, PhoneCallRequested, PhoneCallWaiting
-from pyrogram.raw.types.phone import PhoneCall as PhonePhoneCall
 
+from .packets.v2_7_7 import LegacySignalingPacket, CandidatesListMessage, AckMessage
+from .packets.v2_7_7.base import LegacySignalingPacketMessage
 from .aioudp import open_remote_endpoint
 from .crypto import decrypt, EncryptionX, encrypt
-from .packets import Packet, PacketHeader, PacketInit, PacketInitAck, PacketPing, PacketPong, PacketStreamData, \
-    PacketBase, PacketPayloadBase
-from .packets.init_ack import Stream
 from .udp_endpoint import UdpEndpoint
-from .utils import coro_with_additional_return, do_all_dh_stuff, DhStuff, uint_le_from_bytes, uint_be_from_bytes, \
-    u32be_to_bytes, u8be_to_bytes
-from .utils._opus import _load_opus
+from .utils import coro_with_additional_return, do_all_dh_stuff, DhStuff
 from .utils._protocol import _make_protocol
 
 PhoneCallTypes = PhoneCallAccepted | PhoneCallRequested | PhoneCallWaiting
-
-
-class LegacySignalingPacketMessage(PacketPayloadBase, ABC):
-    REQUIRES_ACK: bool
-
-    __slots__ = ()
-
-
-class LegacySignalingPacket(PacketBase):
-    __slots__ = ("seq", "needs_ack", "packet_type", "payload",)
-
-    def __init__(
-            self, seq: int, payload: LegacySignalingPacketMessage | bytes, needs_ack: bool = False,
-            packet_type: int | None = None,
-    ) -> None:
-        self.seq = seq
-        self.needs_ack = needs_ack
-        self.packet_type = packet_type
-        self.payload = payload
-
-    @classmethod
-    def read(cls, data: BytesIO) -> list[LegacySignalingPacket]:
-        result = []
-
-        cur = data.tell()
-        total_size = data.seek(0, os.SEEK_END)
-        data.seek(cur)
-
-        while data.tell() < total_size:
-            seq = uint_be_from_bytes(data.read(4))
-            # single_message = bool(seq & (1 << 31))
-            needs_ack = bool(seq & (1 << 30))
-            seq &= 0x3fffffff
-
-            packet_type = uint_le_from_bytes(data.read(1))
-            if packet_type == 1:
-                payload = CandidatesListMessage.read(data)
-            elif packet_type == 2:
-                payload = VideoFormatsMessage.read(data)
-            elif packet_type == 3:
-                payload = RequestVideoMessage.read(data)
-            elif packet_type == 4:
-                payload = RemoteMediaStateMessage.read(data)
-            elif packet_type == 8:
-                payload = VideoParametersMessage.read(data)
-            elif packet_type == 9:
-                payload = RemoteBatteryLevelIsLowMessage.read(data)
-            elif packet_type == 10:
-                payload = RemoteNetworkStatusMessage.read(data)
-            elif packet_type == 254:
-                payload = EmptyMessage.read(data)
-            elif packet_type == 255:
-                payload = AckMessage.read(data)
-            else:
-                payload = data.read()
-
-            result.append(LegacySignalingPacket(
-                seq=seq,
-                needs_ack=needs_ack,
-                payload=payload,
-                packet_type=packet_type,
-            ))
-
-        return result
-
-    def write(self) -> bytes:
-        if isinstance(self.payload, LegacySignalingPacketMessage):
-            self.packet_type = self.payload.PACKET_TYPE
-            self.needs_ack = self.payload.REQUIRES_ACK
-            payload = self.payload.write()
-        else:
-            payload = self.payload
-
-        seq = self.seq
-        # if self.single_message:
-        #     seq |= 1 << 31
-        if self.needs_ack:
-            seq |= 1 << 30
-
-        assert self.packet_type is not None
-
-        return b"".join([
-            u32be_to_bytes(seq),
-            u8be_to_bytes(self.packet_type),
-            payload,
-        ])
-
-
-class StringValue(PacketBase):
-    __slots__ = ("value",)
-
-    def __init__(self, value: str) -> None:
-        self.value = value
-
-    @classmethod
-    def read(cls, data: BytesIO) -> StringValue:
-        length = uint_be_from_bytes(data.read(4))
-        string_bytes = data.read(length)
-        return StringValue(string_bytes.decode("utf8"))
-
-    def write(self) -> bytes:
-        string_bytes = self.value.encode("utf8")
-        return u32be_to_bytes(len(string_bytes)) + string_bytes
-
-
-class CandidatesListMessage(LegacySignalingPacketMessage):
-    PACKET_TYPE = 1
-    REQUIRES_ACK = True
-
-    __slots__ = ("candidates", "ufrag", "pwd")
-
-    def __init__(self, candidates: list[str], ufrag: str, pwd: str) -> None:
-        self.candidates = candidates
-        self.ufrag = ufrag
-        self.pwd = pwd
-
-    @classmethod
-    def read(cls, data: BytesIO) -> CandidatesListMessage:
-        candidates_num = uint_be_from_bytes(data.read(1))
-        candidates = []
-        for _ in range(candidates_num):
-            candidates.append(StringValue.read(data).value)
-
-        ufrag = StringValue.read(data).value
-        pwd = StringValue.read(data).value
-
-        return CandidatesListMessage(
-            candidates=candidates,
-            ufrag=ufrag,
-            pwd=pwd,
-        )
-
-    def write(self) -> bytes:
-        return b"".join([
-            u8be_to_bytes(len(self.candidates)),
-            *(
-                StringValue(candidate).write()
-                for candidate in self.candidates
-            ),
-            StringValue(self.ufrag).write(),
-            StringValue(self.pwd).write(),
-        ])
-
-
-class VideoFormatsMessage(LegacySignalingPacketMessage):
-    PACKET_TYPE = 2
-    REQUIRES_ACK = True
-
-    __slots__ = ("formats", "encoders_count",)
-
-    def __init__(self, formats: dict[str, dict[str, str]], encoders_count: int) -> None:
-        self.formats = formats
-        self.encoders_count = encoders_count
-
-    @classmethod
-    def read(cls, data: BytesIO) -> VideoFormatsMessage:
-        formats_num = uint_be_from_bytes(data.read(1))
-        formats = {}
-        for _ in range(formats_num):
-            name = StringValue.read(data).value
-            params_num = uint_be_from_bytes(data.read(1))
-            params = {}
-            for _ in range(params_num):
-                key = StringValue.read(data).value
-                value = StringValue.read(data).value
-                params[key] = value
-            formats[name] = params
-
-        encoders_count = uint_be_from_bytes(data.read(1))
-
-        return VideoFormatsMessage(
-            formats=formats,
-            encoders_count=encoders_count,
-        )
-
-    def write(self) -> bytes:
-        chunks = [u8be_to_bytes(len(self.formats))]
-
-        for name, params in self.formats.items():
-            chunks.append(StringValue(name).write())
-            chunks.append(u8be_to_bytes(len(params)))
-            for key, value in params.items():
-                chunks.append(StringValue(key).write())
-                chunks.append(StringValue(value).write())
-
-        chunks.append(u8be_to_bytes(self.encoders_count))
-
-        return b"".join(chunks)
-
-
-class RequestVideoMessage(LegacySignalingPacketMessage):
-    PACKET_TYPE = 3
-    REQUIRES_ACK = True
-
-    __slots__ = ()
-
-    def __init__(self) -> None:
-        ...
-
-    @classmethod
-    def read(cls, data: BytesIO) -> RequestVideoMessage:
-        return RequestVideoMessage()
-
-    def write(self) -> bytes:
-        return b""
-
-
-class RemoteVideoState(IntEnum):
-    INACTIVE = 0
-    PAUSED = 1
-    ACTIVE = 2
-
-
-class RemoteAudioState(IntEnum):
-    MUTED = 0
-    ACTIVE = 1
-
-
-class RemoteMediaStateMessage(LegacySignalingPacketMessage):
-    PACKET_TYPE = 4
-    REQUIRES_ACK = True
-
-    __slots__ = ("video_state", "audio_state",)
-
-    def __init__(self, video_state: RemoteVideoState, audio_state: RemoteAudioState) -> None:
-        self.video_state = video_state
-        self.audio_state = audio_state
-
-    @classmethod
-    def read(cls, data: BytesIO) -> RemoteMediaStateMessage:
-        state = uint_be_from_bytes(data.read(1))
-        audio = RemoteAudioState(state & 0b01)
-        video = RemoteVideoState((state >> 1) & 0b11)
-        return RemoteMediaStateMessage(
-            video_state=video,
-            audio_state=audio,
-        )
-
-    def write(self) -> bytes:
-        return u8be_to_bytes((self.video_state.value << 1) | (self.audio_state.value << 1))
-
-
-class VideoParametersMessage(LegacySignalingPacketMessage):
-    PACKET_TYPE = 8
-    REQUIRES_ACK = True
-
-    __slots__ = ("aspect_ratio",)
-
-    def __init__(self, aspect_ratio: int) -> None:
-        self.aspect_ratio = aspect_ratio
-
-    @classmethod
-    def read(cls, data: BytesIO) -> VideoParametersMessage:
-        aspect_ratio = uint_be_from_bytes(data.read(4))
-        return VideoParametersMessage(
-            aspect_ratio=aspect_ratio,
-        )
-
-    def write(self) -> bytes:
-        return u32be_to_bytes(self.aspect_ratio)
-
-
-class RemoteBatteryLevelIsLowMessage(LegacySignalingPacketMessage):
-    PACKET_TYPE = 9
-    REQUIRES_ACK = True
-
-    __slots__ = ("battery_low",)
-
-    def __init__(self, battery_low: bool) -> None:
-        self.battery_low = battery_low
-
-    @classmethod
-    def read(cls, data: BytesIO) -> RemoteBatteryLevelIsLowMessage:
-        battery_low = uint_be_from_bytes(data.read(1)) != 0
-        return RemoteBatteryLevelIsLowMessage(
-            battery_low=battery_low,
-        )
-
-    def write(self) -> bytes:
-        return u8be_to_bytes(int(self.battery_low))
-
-
-class RemoteNetworkStatusMessage(LegacySignalingPacketMessage):
-    PACKET_TYPE = 10
-    REQUIRES_ACK = True
-
-    __slots__ = ("is_low_cost", "is_low_data_requested",)
-
-    def __init__(self, is_low_cost: bool, is_low_data_requested: bool) -> None:
-        self.is_low_cost = is_low_cost
-        self.is_low_data_requested = is_low_data_requested
-
-    @classmethod
-    def read(cls, data: BytesIO) -> RemoteNetworkStatusMessage:
-        is_low_cost = uint_be_from_bytes(data.read(1)) != 0
-        is_low_data_requested = uint_be_from_bytes(data.read(1)) != 0
-        return RemoteNetworkStatusMessage(
-            is_low_cost=is_low_cost,
-            is_low_data_requested=is_low_data_requested,
-        )
-
-    def write(self) -> bytes:
-        return b"".join([
-            u8be_to_bytes(int(self.is_low_cost)),
-            u8be_to_bytes(int(self.is_low_data_requested)),
-        ])
-
-
-class EmptyMessage(LegacySignalingPacketMessage):
-    PACKET_TYPE = 254
-    REQUIRES_ACK = False
-
-    __slots__ = ()
-
-    def __init__(self) -> None:
-        ...
-
-    @classmethod
-    def read(cls, data: BytesIO) -> EmptyMessage:
-        return EmptyMessage()
-
-    def write(self) -> bytes:
-        return b""
-
-
-class AckMessage(LegacySignalingPacketMessage):
-    PACKET_TYPE = 255
-    REQUIRES_ACK = False
-
-    __slots__ = ("seq",)
-
-    def __init__(self, seq: int) -> None:
-        self.seq = seq
-
-    @classmethod
-    def read(cls, data: BytesIO) -> AckMessage:
-        seq = uint_be_from_bytes(data.read(4))
-        return AckMessage(
-            seq=seq,
-        )
-
-    def write(self) -> bytes:
-        return u32be_to_bytes(self.seq)
 
 
 class CallIdk_v2_7_7o:
@@ -385,8 +30,10 @@ class CallIdk_v2_7_7o:
         self.call = call
         self.key: bytes | None = None
         self.endpoints: list[UdpEndpoint] = []
-        self.seq = 1
-        self.remote_seq = 0
+        self.signaling_seq = 1
+        self.remote_signaling_seq = 0
+        self.transport_seq = 1
+        self.remote_transport_seq = 0
         self.opus_frames: list[bytes] | None = None
         self.sending_audio: int | None = None
         self.conn: aioice.Connection | None = None
@@ -425,13 +72,29 @@ class CallIdk_v2_7_7o:
 
             await self._call_ice(client)
 
+    async def _send_transport(self, packet: LegacySignalingPacket) -> None:
+        assert self.key is not None
+
+        await self.conn_ready.wait()
+        assert self.conn is not None
+
+        packet.seq = self.transport_seq
+        self.transport_seq += 1
+
+        print(f"sending (transport): {packet}")
+
+        await self.conn.sendto(
+            data=encrypt(packet.write(), self.key, EncryptionX.OUT_TRANSPORT, ctr=True),
+            component=0,
+        )
+
     async def _send_signaling(self, client: Client, packet: LegacySignalingPacket) -> None:
         assert self.key is not None
 
-        packet.seq = self.seq
-        self.seq += 1
+        packet.seq = self.signaling_seq
+        self.signaling_seq += 1
 
-        print(f"sending: {packet}")
+        print(f"sending (signaling): {packet}")
 
         await client.invoke(SendSignalingData(
             peer=self._make_input_call(),
@@ -448,7 +111,24 @@ class CallIdk_v2_7_7o:
             decrypted, valid = decrypt(data, self.key, x=EncryptionX.IN_TRANSPORT, ctr=True, ctr_value=0)
             print(f"  decrypted (valid={valid}): {decrypted}")
             packets = LegacySignalingPacket.read(BytesIO(decrypted))
-            print(packets)
+
+            for packet in packets:
+                skip = packet.seq <= self.remote_transport_seq
+                skipped_text = ", skipped" if skip else ""
+                print(f"    packet (transport{skipped_text}) = {packet}")
+
+                if skip:
+                    continue
+
+                if packet.needs_ack:
+                    self.remote_transport_seq = packet.seq
+                    await self._send_transport(
+                        LegacySignalingPacket(seq=0, payload=AckMessage(seq=packet.seq)),
+                    )
+
+                # task = asyncio.create_task(self._handle_signaling(packet.payload))
+                # self.tasks.add(task)
+                # task.add_done_callback(self.tasks.discard)
 
     def _ice_connected_callback(self, _: asyncio.Task) -> None:
         task = asyncio.create_task(self._ice_connected())
@@ -456,14 +136,14 @@ class CallIdk_v2_7_7o:
         task.add_done_callback(self.tasks.discard)
 
     async def _handle_signaling(self, payload: LegacySignalingPacketMessage) -> None:
-        assert self.conn is not None
-
         if isinstance(payload, CandidatesListMessage):
+            await self.conn_ready.wait()
+            assert self.conn is not None
+
             self.conn.remote_username = payload.ufrag
             self.conn.remote_password = payload.pwd
             if not self.connected:
                 self.connected = True
-                await self.conn_ready.wait()
                 task = asyncio.create_task(self.conn.connect())
                 self.tasks.add(task)
                 task.add_done_callback(self.tasks.discard)
@@ -484,7 +164,8 @@ class CallIdk_v2_7_7o:
 
     async def _handle_signaling_update(self, client: Client, update: UpdatePhoneCallSignalingData, _1, _2) -> None:
         assert self.key is not None
-        assert self.conn is not None
+
+        await self.conn_ready.wait()
 
         print(f"got signaling data (len={len(update.data)}): {update.data}")
         decrypted, valid = decrypt(update.data, self.key, x=EncryptionX.IN_SIGNALING, ctr=True, ctr_value=0)
@@ -492,15 +173,15 @@ class CallIdk_v2_7_7o:
         if valid:
             packets = LegacySignalingPacket.read(BytesIO(decrypted))
             for packet in packets:
-                skip = packet.seq <= self.remote_seq
-                skipped_text = "(skipped) " if skip else ""
-                print(f"    packet {skipped_text}= {packet}")
+                skip = packet.seq <= self.remote_signaling_seq
+                skipped_text = ", skipped" if skip else ""
+                print(f"    packet (signaling{skipped_text}) = {packet}")
 
                 if skip:
                     continue
 
                 if packet.needs_ack:
-                    self.remote_seq = packet.seq
+                    self.remote_signaling_seq = packet.seq
                     await self._send_signaling(
                         client,
                         LegacySignalingPacket(seq=0, payload=AckMessage(seq=packet.seq)),
@@ -515,20 +196,21 @@ class CallIdk_v2_7_7o:
 
         ips = []
         ice_servers = []
-        turn_server = None
-        stun_server = None
-        turn_username = None
-        turn_password = None
+        turn_servers = []
+        stun_servers = []
         connection: PhoneConnection | PhoneConnectionWebrtc
         for connection in self.call.connections:
             ips.append(connection.ip)
             if isinstance(connection, PhoneConnectionWebrtc):
                 if connection.stun:
-                    stun_server = (connection.ip, connection.port)
+                    stun_servers.append(aioice.StunServer(connection.ip, connection.port))
                 if connection.turn:
-                    turn_server = (connection.ip, connection.port)
-                    turn_username = connection.username
-                    turn_password = connection.password
+                    turn_servers.append(aioice.TurnServer(
+                        connection.ip,
+                        connection.port,
+                        connection.username,
+                        connection.password,
+                    ))
                 # if connection.stun:
                 #     ice_servers.append(RTCIceServer(f"stun:{connection.id}:{connection.port}"))
                 # if connection.turn:
@@ -542,10 +224,9 @@ class CallIdk_v2_7_7o:
 
         self.conn = conn = aioice.Connection(
             ice_controlling=True,
-            stun_server=stun_server,
-            turn_server=turn_server,
-            turn_username=turn_username,
-            turn_password=turn_password,
+            stun_servers=stun_servers,
+            turn_servers=turn_servers,
+            transport_policy=aioice.TransportPolicy.RELAY,
         )
         conn._components = {0}
         await conn.gather_candidates()
@@ -560,7 +241,6 @@ class CallIdk_v2_7_7o:
                     candidates=[
                         f"candidate:{candidate.to_sdp()}"
                         for candidate in conn.local_candidates
-                        if candidate.type == "relay"
                     ],
                     ufrag=conn.local_username,
                     pwd=conn.local_password,

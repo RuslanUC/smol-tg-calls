@@ -4,16 +4,23 @@ requires-python = ">=3.11"
 
 [[package]]
 name = "aioice"
-version = "0.10.2"
-source = { registry = "https://pypi.org/simple" }
+source = { directory = "../aioice-multiple-stun-turn" }
 dependencies = [
     { name = "dnspython" },
     { name = "ifaddr" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/67/04/df7286233f468e19e9bedff023b6b246182f0b2ccb04ceeb69b2994021c6/aioice-0.10.2.tar.gz", hash = "sha256:bf236c6829ee33c8e540535d31cd5a066b531cb56de2be94c46be76d68b1a806", size = 44307, upload-time = "2025-11-28T15:56:48.836Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/c7/e3/0d23b1f930c17d371ce1ec36ee529f22fd19ebc2a07fe3418e3d1d884ce2/aioice-0.10.2-py3-none-any.whl", hash = "sha256:14911c15ab12d096dd14d372ebb4aecbb7420b52c9b76fdfcf54375dec17fcbf", size = 24875, upload-time = "2025-11-28T15:56:47.847Z" },
+
+[package.metadata]
+requires-dist = [
+    { name = "coverage", extras = ["toml"], marker = "extra == 'dev'", specifier = ">=7.2.2" },
+    { name = "dnspython", specifier = ">=2.0.0" },
+    { name = "ifaddr", specifier = ">=0.2.0" },
+    { name = "mypy", marker = "extra == 'dev'" },
+    { name = "pyopenssl", marker = "extra == 'dev'" },
+    { name = "ruff", marker = "extra == 'dev'" },
+    { name = "websockets", marker = "extra == 'dev'" },
 ]
+provides-extras = ["dev"]
 
 [[package]]
 name = "aiortc"
@@ -358,6 +365,7 @@ name = "smol-tg-calls"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "aioice" },
     { name = "aiortc" },
     { name = "opuslib" },
     { name = "pyrogram" },
@@ -366,6 +374,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aioice", directory = "../aioice-multiple-stun-turn" },
     { name = "aiortc", specifier = ">=1.15.0" },
     { name = "opuslib", specifier = ">=3.0.1" },
     { name = "pyrogram", specifier = ">=2.0.106" },

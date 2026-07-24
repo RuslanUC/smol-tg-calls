@@ -2,23 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import os
-import wave
-from hashlib import sha256, sha1
+from hashlib import sha1
 from io import BytesIO
-from typing import NamedTuple
 
-import opuslib
 from pyrogram import Client
-from pyrogram.raw.functions.messages import GetDhConfig
 from pyrogram.raw.functions.phone import RequestCall, ConfirmCall
-from pyrogram.raw.types import InputPhoneCall, UpdatePhoneCall, PhoneCallAccepted, PhoneCallProtocol, PhoneConnection, \
+from pyrogram.raw.types import InputPhoneCall, UpdatePhoneCall, PhoneCallAccepted, PhoneConnection, \
     PhoneCall, UpdatePhoneCallSignalingData
 from pyrogram.raw.types.phone import PhoneCall as PhonePhoneCall
 
 from .aioudp import open_remote_endpoint
 from .crypto import decrypt, EncryptionX, encrypt
-from .packets import Packet, PacketHeader, PacketInit, PacketInitAck, PacketPing, PacketPong, PacketStreamData
-from .packets.init_ack import Stream
+from .packets.v2_4_4 import Packet, PacketHeader, PacketInit, PacketInitAck, PacketPing, PacketPong, PacketStreamData, \
+    Stream
 from .udp_endpoint import UdpEndpoint
 from .utils import coro_with_additional_return, DhStuff, do_all_dh_stuff
 from .utils._opus import _load_opus
@@ -52,13 +48,13 @@ class CallIdk_v2_4_4:
         print(update)
         if isinstance(update.phone_call, PhoneCallAccepted):
             g_b = int.from_bytes(update.phone_call.g_b, "big", signed=False)
-            self.key = key = pow(g_b, self.dh.a, self.dh.prime).to_bytes(256, "big", signed=False)
+            self.key = key = pow(g_b, self.dh.x, self.dh.prime).to_bytes(256, "big", signed=False)
 
             client.on_raw_update()(self._handle_signaling_update)
 
             self.call = await client.invoke(ConfirmCall(
                 peer=self._make_input_call(),
-                g_a=self.dh.g_a,
+                g_a=self.dh.g_x,
                 key_fingerprint=int.from_bytes(sha1(key).digest()[-8:], "little", signed=True),
                 protocol=_make_protocol("2.4.4"),
             ))
@@ -293,7 +289,7 @@ async def _call_outgoing_v2_4_4(client: Client) -> None:
     call = await client.invoke(RequestCall(
         user_id=await client.resolve_peer(os.environ["CALL_PEER"]),
         random_id=int.from_bytes(os.urandom(4), "big", signed=True),
-        g_a_hash=dh.g_a_hash,
+        g_a_hash=dh.g_x_hash,
         protocol=_make_protocol("2.4.4"),
         video=False,
     ))
