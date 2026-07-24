@@ -7,5 +7,8 @@ from .remote_battery_low import RemoteBatteryLevelIsLowMessage
 from .remote_network_status import RemoteNetworkStatusMessage
 from .empty import EmptyMessage
 from .ack import AckMessage
+from .audio_data import AudioDataMessage
+from .video_data import VideoDataMessage
+from .unstructured_data import UnstructuredDataMessage
 
 from .packet import LegacySignalingPacket

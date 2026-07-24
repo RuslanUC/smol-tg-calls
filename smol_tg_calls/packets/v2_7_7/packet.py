@@ -6,7 +6,7 @@ from io import BytesIO
 from smol_tg_calls.packets import PacketBase
 from smol_tg_calls.packets.v2_7_7 import VideoParametersMessage, AckMessage, CandidatesListMessage, EmptyMessage, \
     RemoteBatteryLevelIsLowMessage, RemoteMediaStateMessage, RemoteNetworkStatusMessage, RequestVideoMessage, \
-    VideoFormatsMessage
+    VideoFormatsMessage, AudioDataMessage, VideoDataMessage, UnstructuredDataMessage
 from smol_tg_calls.packets.v2_7_7.base import LegacySignalingPacketMessage
 from smol_tg_calls.utils import uint_be_from_bytes, uint_le_from_bytes, u32be_to_bytes, u8be_to_bytes
 
@@ -46,6 +46,12 @@ class LegacySignalingPacket(PacketBase):
                 payload = RequestVideoMessage.read(data)
             elif packet_type == RemoteMediaStateMessage.PACKET_TYPE:
                 payload = RemoteMediaStateMessage.read(data)
+            elif packet_type == AudioDataMessage.PACKET_TYPE:
+                payload = AudioDataMessage.read(data)
+            elif packet_type == VideoDataMessage.PACKET_TYPE:
+                payload = VideoDataMessage.read(data)
+            elif packet_type == UnstructuredDataMessage.PACKET_TYPE:
+                payload = UnstructuredDataMessage.read(data)
             elif packet_type == VideoParametersMessage.PACKET_TYPE:
                 payload = VideoParametersMessage.read(data)
             elif packet_type == RemoteBatteryLevelIsLowMessage.PACKET_TYPE:
