@@ -260,6 +260,10 @@ class CallIdk_v2_7_7o:
         self.remote_seq = 0
         self.opus_frames: list[bytes] | None = None
         self.sending_audio: int | None = None
+        self.conn: aioice.Connection | None = None
+        self.conn_ready = asyncio.Event()
+        self.tasks = set()
+        self.connected = False
 
     def _make_input_call(self) -> InputPhoneCall:
         return InputPhoneCall(
@@ -305,8 +309,51 @@ class CallIdk_v2_7_7o:
             data=encrypt(packet.write(), self.key, EncryptionX.OUT_SIGNALING, ctr=True),
         ))
 
+    async def _ice_connected(self) -> None:
+        assert self.key is not None
+        assert self.conn is not None
+
+        while True:
+            data, component = await self.conn.recvfrom()
+            print(f"Received from component {component}: {data}")
+            decrypted, valid = decrypt(data, self.key, x=EncryptionX.IN_TRANSPORT, ctr=True, ctr_value=0)
+            print(f"  decrypted (valid={valid}): {decrypted}")
+
+    def _ice_connected_callback(self, _: asyncio.Task) -> None:
+        task = asyncio.create_task(self._ice_connected())
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+
+    async def _handle_signaling(self, payload: LegacySignalingPacketMessage) -> None:
+        assert self.conn is not None
+
+        if isinstance(payload, CandidatesListMessage):
+            self.conn.remote_username = payload.ufrag
+            self.conn.remote_password = payload.pwd
+            if not self.connected:
+                self.connected = True
+                await self.conn_ready.wait()
+                task = asyncio.create_task(self.conn.connect())
+                self.tasks.add(task)
+                task.add_done_callback(self.tasks.discard)
+                task.add_done_callback(self._ice_connected_callback)
+
+            for candidate_sdp in payload.candidates:
+                if not candidate_sdp.startswith("candidate:"):
+                    continue
+                candidate_sdp = candidate_sdp[10:]
+                candidate = aioice.Candidate.from_sdp(candidate_sdp)
+                if candidate.host.endswith(".reflector"):
+                    # No clue how to work with these
+                    continue
+                print(f"Adding remote candidate {candidate}")
+                await self.conn.add_remote_candidate(candidate)
+        elif isinstance(payload, AckMessage):
+            print(f"got ack for message {payload.seq}")
+
     async def _handle_signaling_update(self, client: Client, update: UpdatePhoneCallSignalingData, _1, _2) -> None:
         assert self.key is not None
+        assert self.conn is not None
 
         print(f"got signaling data (len={len(update.data)}): {update.data}")
         decrypted, valid = decrypt(update.data, self.key, x=EncryptionX.IN_SIGNALING, ctr=True, ctr_value=0)
@@ -314,23 +361,23 @@ class CallIdk_v2_7_7o:
         if valid:
             packets = LegacySignalingPacket.read(BytesIO(decrypted))
             for packet in packets:
-                print(f"    packet = {packet}")
+                skip = packet.seq <= self.remote_seq
+                skipped_text = "(skipped) " if skip else ""
+                print(f"    packet {skipped_text}= {packet}")
 
-                if packet.seq <= self.remote_seq:
+                if skip:
                     continue
 
-                self.remote_seq = packet.seq
-
                 if packet.needs_ack:
+                    self.remote_seq = packet.seq
                     await self._send_signaling(
                         client,
                         LegacySignalingPacket(seq=0, payload=AckMessage(seq=packet.seq)),
                     )
 
-                if isinstance(packet.payload, CandidatesListMessage):
-                    print("got candidates")
-                elif isinstance(packet.payload, AckMessage):
-                    print(f"got ack for message {packet.payload.seq}")
+                task = asyncio.create_task(self._handle_signaling(packet.payload))
+                self.tasks.add(task)
+                task.add_done_callback(self.tasks.discard)
 
     async def _call_ice(self, client: Client) -> None:
         assert self.key is not None and self.call is not None
@@ -362,7 +409,7 @@ class CallIdk_v2_7_7o:
 
         # rtc = RTCPeerConnection(RTCConfiguration(iceServers=ice_servers))
 
-        conn = aioice.Connection(
+        self.conn = conn = aioice.Connection(
             ice_controlling=True,
             stun_server=stun_server,
             turn_server=turn_server,
@@ -389,6 +436,8 @@ class CallIdk_v2_7_7o:
                 ),
             ),
         )
+
+        self.conn_ready.set()
 
     async def _req_reflector_peer_self_info(self) -> None:
         await asyncio.gather(*(
