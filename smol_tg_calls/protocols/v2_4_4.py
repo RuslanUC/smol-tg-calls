@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import queue
+from fractions import Fraction
 from io import BytesIO
-from typing import TYPE_CHECKING
+from queue import Queue
+from threading import Thread
+from typing import TYPE_CHECKING, cast
 
+from aiortc.codecs import Decoder
+from aiortc.jitterbuffer import JitterBuffer, JitterFrame
+from aiortc.rtp import RtpPacket
+from av import CodecContext
+from av.frame import Frame
+from av.packet import Packet as AvPacket
 from pyrogram import Client
 from pyrogram.raw.types import PhoneConnection, UpdatePhoneCallSignalingData, PhoneConnectionWebrtc
 
@@ -21,8 +31,40 @@ if TYPE_CHECKING:
 OPUS = int.from_bytes(b"SUPO", "little", signed=False)
 
 
+def decoder_worker(
+    loop: asyncio.AbstractEventLoop, input_q: queue.Queue[tuple[Decoder, JitterFrame, asyncio.Queue]],
+) -> None:
+    while True:
+        task = input_q.get()
+        if task is None:
+            break
+
+        decoder, encoded_frame, output_q = task
+        for frame in decoder.decode(encoded_frame):
+            # pass the decoded frame to the track
+            asyncio.run_coroutine_threadsafe(output_q.put(frame), loop)
+
+
+class OpusDecoder(Decoder):
+    def __init__(self, mspf: int) -> None:
+        self.mspf = mspf
+        self.codec = CodecContext.create("opus", "r")
+        self.codec.format = "s16"
+        self.codec.layout = "mono"
+        self.codec.sample_rate = 48000
+
+    def decode(self, encoded_frame: JitterFrame) -> list[Frame]:
+        packet = AvPacket(encoded_frame.data)
+        packet.pts = encoded_frame.timestamp
+        packet.time_base = Fraction(1, 48000)
+        return cast(list[Frame], self.codec.decode(packet))
+
+
 class PhoneCallProtocolV2_4_4(PhoneCallProtocol):
-    __slots__ = ("seq", "remote_seq", "endpoints", "stop_event", "ping_task",)
+    __slots__ = (
+        "seq", "remote_seq", "endpoints", "stop_event", "ping_task", "jitter_buffer", "worker_thread", "worker_queue",
+        "opus_queue", "opus_decoder",
+    )
 
     def __init__(self, client: Client, call: PhoneCall, key: bytes, outgoing: bool) -> None:
         super().__init__(client, call, key, outgoing)
@@ -32,8 +74,14 @@ class PhoneCallProtocolV2_4_4(PhoneCallProtocol):
         self.endpoints: list[UdpEndpoint] = []
         self.stop_event = asyncio.Event()
         self.ping_task: asyncio.Task | None = None
+        self.worker_queue = queue.Queue()
+        self.opus_queue = asyncio.Queue()
+        self.opus_decoder = OpusDecoder(60)
+        self.worker_thread: Thread = Thread(target=decoder_worker, args=(asyncio.get_running_loop(), self.worker_queue))
 
     async def start(self, connections: list[PhoneConnection | PhoneConnectionWebrtc]) -> None:
+        self.worker_thread.start()
+
         for connection in connections:
             if not isinstance(connection, PhoneConnection) or connection.tcp:
                 continue
@@ -70,11 +118,16 @@ class PhoneCallProtocolV2_4_4(PhoneCallProtocol):
         for endpoint in self.endpoints:
             endpoint.close()
 
+        self.worker_queue.put_nowait(None)
+
     async def stop(self) -> None:
         self.stop_event.set()
 
     async def handle_signaling_update(self, update: UpdatePhoneCallSignalingData) -> None:
         pass
+
+    async def recv_audio(self) -> Frame:
+        return await self.opus_queue.get()
 
     async def _req_reflector_peer_self_info(self) -> None:
         await asyncio.gather(*(
@@ -229,10 +282,22 @@ class PhoneCallProtocolV2_4_4(PhoneCallProtocol):
         if isinstance(payload, PacketInit):
             self._send_init_ack()
         elif isinstance(payload, PacketInitAck):
+            for stream in payload.streams:
+                if stream.type == OPUS:
+                    self.opus_decoder.mspf = stream.frame_duration
             self._send_init()
         elif isinstance(payload, PacketPing):
             self._send_pong()
         elif isinstance(payload, PacketStreamData):
+            self.worker_queue.put_nowait((self.opus_decoder, JitterFrame(payload.data, payload.pts), self.opus_queue))
+            # self.jitter_buffer.add(RtpPacket(
+            #     payload_type=111,
+            #     sequence_number=packet.header.seq,
+            #     timestamp=payload.pts,
+            #     ssrc=payload.stream_id,
+            #     payload=payload.data,
+            # ))
+
             # if self.sending_audio is None:
             #     if self.opus_frames is None:
             #         print("Loading opus frames...")

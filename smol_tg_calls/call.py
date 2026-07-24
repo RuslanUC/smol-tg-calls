@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from enum import Enum, auto
 
+from av.frame import Frame
 from pyrogram.raw.types import PhoneCallProtocol as TLPhoneCallProtocol, InputPhoneCall
 from pyrogram.types import User
 
@@ -44,3 +45,6 @@ class PhoneCall:
             id=self.id,
             access_hash=self.access_hash,
         )
+
+    async def recv_audio(self) -> Frame:
+        return self._protocol.recv_audio()

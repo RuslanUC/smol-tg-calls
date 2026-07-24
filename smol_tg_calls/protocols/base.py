@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
+from av.frame import Frame
 from pyrogram import Client
 from pyrogram.raw.types import UpdatePhoneCallSignalingData, PhoneConnection, PhoneConnectionWebrtc
 
@@ -39,6 +40,10 @@ class PhoneCallProtocol(ABC):
 
     @abstractmethod
     async def handle_signaling_update(self, update: UpdatePhoneCallSignalingData) -> None:
+        ...
+
+    @abstractmethod
+    async def recv_audio(self) -> Frame:
         ...
 
     def transport_x(self, recv: bool) -> int:

@@ -10,6 +10,7 @@ from aiortc.clock import current_ms
 from aiortc.rtcrtpparameters import RTCRtpReceiveParameters, RTCRtpCodecParameters
 from aiortc.rtcrtpreceiver import RemoteStreamTrack
 from aiortc.rtp import RtcpPacket, RtpPacket
+from av.frame import Frame
 from pyrogram import Client
 from pyrogram.raw.functions.phone import SendSignalingData
 from pyrogram.raw.types import PhoneCallAccepted, PhoneConnection, \
@@ -56,7 +57,7 @@ class FakeDtlsTransport:
 class PhoneCallProtocolV2_7_7(PhoneCallProtocol):
     __slots__ = (
         "signaling_seq", "remote_signaling_seq", "transport_seq", "remote_transport_seq", "stop_event", "ping_task",
-        "connection", "connection_init", "connection_connected", "recv_task",
+        "connection", "connection_init", "connection_connected", "recv_task", "track",
     )
 
     def __init__(self, client: Client, call: PhoneCall, key: bytes, outgoing: bool) -> None:
@@ -70,6 +71,7 @@ class PhoneCallProtocolV2_7_7(PhoneCallProtocol):
         self.connection: aioice.Connection | None = None
         self.connection_init = asyncio.Event()
         self.connection_connected = asyncio.Event()
+        self.track = RemoteStreamTrack("audio")
         self.ping_task: asyncio.Task | None = None
         self.recv_task: asyncio.Task | None = None
 
@@ -119,7 +121,6 @@ class PhoneCallProtocolV2_7_7(PhoneCallProtocol):
         self.stop_event.set()
 
     async def handle_signaling_update(self, update: UpdatePhoneCallSignalingData) -> None:
-        print("umm")
         await self.connection_init.wait()
 
         decrypted, valid = decrypt(update.data, self.key, self.signaling_x(True), ctr=True)
@@ -144,6 +145,9 @@ class PhoneCallProtocolV2_7_7(PhoneCallProtocol):
                 )
 
             await self._handle_signaling(packet.payload)
+
+    async def recv_audio(self) -> Frame:
+        return await self.track.recv()
 
     async def _send_transport(self, packet: LegacySignalingPacket) -> None:
         await self.connection_connected.wait()
@@ -191,7 +195,7 @@ class PhoneCallProtocolV2_7_7(PhoneCallProtocol):
         ))
 
         receiver = RTCRtpReceiver("audio", FakeDtlsTransport())
-        receiver._track = track = RemoteStreamTrack("audio")
+        receiver._track = self.track
         await receiver.receive(RTCRtpReceiveParameters(
             codecs=[
                 RTCRtpCodecParameters(
@@ -242,8 +246,6 @@ class PhoneCallProtocolV2_7_7(PhoneCallProtocol):
                 # task = asyncio.create_task(self._handle_signaling(packet.payload))
                 # self.tasks.add(task)
                 # task.add_done_callback(self.tasks.discard)
-
-        print(await track.recv())
 
     def _ice_connected_callback(self, _: asyncio.Task) -> None:
         self.recv_task = asyncio.create_task(self._recv_loop())
