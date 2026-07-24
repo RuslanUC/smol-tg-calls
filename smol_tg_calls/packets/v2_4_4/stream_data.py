@@ -40,7 +40,7 @@ class PacketStreamData(PacketPayloadBase):
         if fragmented:
             fragment_index = uint_le_from_bytes(data.read(1))
             fragment_count = uint_le_from_bytes(data.read(1))
-        sdlen &= 0x0f77
+        sdlen &= 0x07ff
         media = data.read(sdlen)
         return cls(
             stream_id=stream_id,

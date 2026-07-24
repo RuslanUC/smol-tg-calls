@@ -21,8 +21,9 @@ class Packet(PacketBase):
 
     @classmethod
     def read(cls, data: BytesIO) -> Packet:
+        start = data.tell()
         header = PacketHeader.read(data)
-        payload = data.read(header.length - 16)
+        payload = data.read(header.length - (data.tell() - start) + 2)
         if header.packet_type == 1:
             payload = PacketInit.read(BytesIO(payload))
         elif header.packet_type == 2:
@@ -42,9 +43,9 @@ class Packet(PacketBase):
             payload_bytes = self.payload.write()
         else:
             payload_bytes = self.payload
-        self.header.length = 16 + len(payload_bytes)
+        self.header.length = len(self.header.write()) - 2 + len(payload_bytes)
         result = self.header.write() + payload_bytes
-        if pad and self.header.length % 16 != 0:
+        if pad and len(result) % 16 != 0:
             padding = (-len(result)) % 16
             if padding < 16:
                 padding += 16
