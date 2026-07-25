@@ -87,7 +87,6 @@ class PhoneCallProtocolV2_4_4(PhoneCallProtocol):
         for connection in connections:
             if not isinstance(connection, PhoneConnection) or connection.tcp:
                 continue
-            print(f"Using connection {connection}")
             self.endpoints.append(UdpEndpoint(
                 await open_remote_endpoint(connection.ip, connection.port),
                 connection.peer_tag,

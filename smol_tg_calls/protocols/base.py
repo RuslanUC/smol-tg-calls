@@ -12,12 +12,12 @@ if TYPE_CHECKING:
     from smol_tg_calls.main import PhoneCall
 
 _TRANSPORT_X_TABLE = (
-    (EncryptionX.OUT_TRANSPORT, EncryptionX.IN_TRANSPORT),
     (EncryptionX.IN_TRANSPORT, EncryptionX.OUT_TRANSPORT),
+    (EncryptionX.OUT_TRANSPORT, EncryptionX.IN_TRANSPORT),
 )
 _SIGNALING_X_TABLE = (
-    (EncryptionX.OUT_SIGNALING, EncryptionX.IN_SIGNALING),
     (EncryptionX.IN_SIGNALING, EncryptionX.OUT_SIGNALING),
+    (EncryptionX.OUT_SIGNALING, EncryptionX.IN_SIGNALING),
 )
 
 

@@ -5,6 +5,7 @@ import os
 
 from pyrogram import Client
 
+from smol_tg_calls.call import PhoneCall, PhoneCallState
 from smol_tg_calls.client import PhoneCallClient
 
 
@@ -16,6 +17,23 @@ async def main() -> None:
     ) as client:
         call_client = PhoneCallClient(client, "2.4.4")
         # call_client = PhoneCallClient(client, "2.7.7")
+        call_states: dict[int, PhoneCallState] = {}
+
+        @call_client.on_new_call
+        async def new_call_handler(call: PhoneCall) -> None:
+            print(f"New phone call {call.id}: None -> {call.state}")
+            call_states[call.id] = call.state
+            if call.state == PhoneCallState.IN_REQUESTED:
+                await call.accept()
+
+        @call_client.on_call_update
+        async def call_update_handler(call: PhoneCall) -> None:
+            print(f"Phone call {call.id}: {call_states[call.id]} -> {call.state}")
+            if call.state is PhoneCallState.DISCARDED:
+                del call_states[call.id]
+            else:
+                call_states[call.id] = call.state
+
         await call_client.start_call(os.environ["CALL_PEER"])
         await asyncio.sleep(300)
 
