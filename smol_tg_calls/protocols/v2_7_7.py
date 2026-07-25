@@ -22,7 +22,7 @@ from ..packets.v2_7_7 import LegacySignalingPacket, CandidatesListMessage, AckMe
     VideoParametersMessage, RemoteMediaStateMessage
 from ..packets.v2_7_7.base import LegacySignalingPacketMessage
 from ..packets.v2_7_7.remote_media_state import RemoteVideoState, RemoteAudioState
-from ..track import PhoneCallIncomingTrack
+from ..in_track import PhoneCallIncomingTrack
 
 if TYPE_CHECKING:
     from ..main import PhoneCall

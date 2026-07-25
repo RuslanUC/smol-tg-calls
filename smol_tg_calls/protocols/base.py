@@ -7,7 +7,7 @@ from pyrogram import Client
 from pyrogram.raw.types import UpdatePhoneCallSignalingData, PhoneConnection, PhoneConnectionWebrtc
 
 from smol_tg_calls.crypto import EncryptionX
-from smol_tg_calls.track import PhoneCallIncomingTrack
+from smol_tg_calls.in_track import PhoneCallIncomingTrack
 
 if TYPE_CHECKING:
     from smol_tg_calls.main import PhoneCall
