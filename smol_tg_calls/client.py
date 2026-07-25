@@ -16,7 +16,7 @@ from pyrogram.types import User, Chat
 from smol_tg_calls.call import PhoneCall, PhoneCallState
 from smol_tg_calls.utils.dh import prepare_dh
 
-ProtocolVersion = Literal["2.4.4", "2.7.7"]
+ProtocolVersion = Literal["2.4.4", "2.7.7", "5.0.0"]
 PhoneCallTypes = TLPhoneCall | PhoneCallAccepted | PhoneCallDiscarded | PhoneCallEmpty | PhoneCallRequested \
                  | PhoneCallWaiting
 CallCallback = Callable[[PhoneCall], Coroutine[Any, Any, Any]]
@@ -32,7 +32,7 @@ class PhoneCallClient:
 
         self.protocol_versions: list[ProtocolVersion]
         if protocol_versions is None:
-            self.protocol_versions = ["2.4.4", "2.7.7"]
+            self.protocol_versions = ["2.4.4", "5.0.0"]
         elif isinstance(protocol_versions, str):
             self.protocol_versions = [protocol_versions]
         else:

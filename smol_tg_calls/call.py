@@ -14,6 +14,7 @@ from pyrogram.types import User
 from smol_tg_calls.protocols import PhoneCallProtocolV2_4_4, PhoneCallProtocolV2_7_7
 from smol_tg_calls.protocols.base import PhoneCallProtocol
 from smol_tg_calls.in_track import PhoneCallIncomingTrack, PhoneCallTrackReader
+from smol_tg_calls.protocols.v5_0_0 import PhoneCallProtocolV5_0_0
 from smol_tg_calls.utils import DhValues, prepare_dh
 from smol_tg_calls.utils.dh import DhError
 
@@ -153,6 +154,8 @@ class PhoneCall:
             protocol = PhoneCallProtocolV2_4_4(self._client.client, self, key, outgoing)
         elif version == "2.7.7":
             protocol = PhoneCallProtocolV2_7_7(self._client.client, self, key, outgoing)
+        elif version == "5.0.0":
+            protocol = PhoneCallProtocolV5_0_0(self._client.client, self, key, outgoing)
         else:
             await self.discard()
             print(f"Got unsupported protocol: {version}")

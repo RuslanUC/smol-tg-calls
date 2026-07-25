@@ -15,8 +15,9 @@ async def main() -> None:
             api_id=int(os.environ["API_ID"]),
             api_hash=os.environ["API_HASH"],
     ) as client:
-        call_client = PhoneCallClient(client, "2.4.4")
+        # call_client = PhoneCallClient(client, "2.4.4")
         # call_client = PhoneCallClient(client, "2.7.7")
+        call_client = PhoneCallClient(client, "5.0.0")
         call_states: dict[int, PhoneCallState] = {}
 
         @call_client.on_new_call
