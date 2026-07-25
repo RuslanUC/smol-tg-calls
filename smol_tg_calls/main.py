@@ -34,6 +34,12 @@ async def main() -> None:
             else:
                 call_states[call.id] = call.state
 
+            if call.state in (PhoneCallState.IN_ACTIVE, PhoneCallState.OUT_ACTIVE):
+                track = call.get_audio_track()
+                while (frame := await track.read()) is not None:
+                    print(frame)
+                track.stop()
+
         await call_client.start_call(os.environ["CALL_PEER"])
         await asyncio.sleep(300)
 

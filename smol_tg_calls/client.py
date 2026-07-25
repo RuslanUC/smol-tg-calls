@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import os
-from typing import Literal, Any, Callable, Awaitable
+from typing import Literal, Any, Callable, Coroutine
 
 from pyrogram import Client
 from pyrogram.handlers import RawUpdateHandler
@@ -18,7 +19,7 @@ from smol_tg_calls.utils.dh import prepare_dh
 ProtocolVersion = Literal["2.4.4", "2.7.7"]
 PhoneCallTypes = TLPhoneCall | PhoneCallAccepted | PhoneCallDiscarded | PhoneCallEmpty | PhoneCallRequested \
                  | PhoneCallWaiting
-CallCallback = Callable[[PhoneCall], Awaitable[Any]]
+CallCallback = Callable[[PhoneCall], Coroutine[Any, Any, Any]]
 
 
 class PhoneCallClient:
@@ -40,6 +41,7 @@ class PhoneCallClient:
         self._phone_calls: dict[int, PhoneCall] = {}
         self._on_new_call_handlers: set[CallCallback] = set()
         self._on_call_update_handlers: set[CallCallback] = set()
+        self._tasks: set[asyncio.Task] = set()
 
         client.add_handler(RawUpdateHandler(self._raw_updates_handler))
 
@@ -58,20 +60,18 @@ class PhoneCallClient:
 
     async def notify_new_call(self, call: PhoneCall) -> None:
         for handler in self._on_new_call_handlers:
-            try:
-                await handler(call)
-            except Exception as e:
-                print(f"Handler exception: {e.__class__.__name__}: {e}")
+            task = asyncio.create_task(handler(call))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
 
     async def notify_call_updated(self, call_id: int) -> None:
         if call_id not in self._phone_calls:
             return
         call = self._phone_calls[call_id]
         for handler in self._on_call_update_handlers:
-            try:
-                await handler(call)
-            except Exception as e:
-                print(f"Handler exception: {e.__class__.__name__}: {e}")
+            task = asyncio.create_task(handler(call))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
 
     async def start_call(self, user_id: str | int) -> PhoneCall:
         dh = await prepare_dh(self.client)

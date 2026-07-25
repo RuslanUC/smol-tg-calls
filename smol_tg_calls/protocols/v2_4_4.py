@@ -4,7 +4,6 @@ import asyncio
 import queue
 from fractions import Fraction
 from io import BytesIO
-from queue import Queue
 from threading import Thread
 from typing import TYPE_CHECKING, cast
 
@@ -22,6 +21,7 @@ from ..aioudp import open_remote_endpoint
 from ..crypto import decrypt, encrypt
 from ..packets.v2_4_4 import Packet, PacketHeader, PacketInit, PacketInitAck, PacketPing, PacketPong, PacketStreamData, \
     Stream
+from ..track import PhoneCallIncomingTrack
 from ..udp_endpoint import UdpEndpoint
 from ..utils import coro_with_additional_return
 
@@ -29,21 +29,6 @@ if TYPE_CHECKING:
     from ..main import PhoneCall
 
 OPUS = int.from_bytes(b"SUPO", "little", signed=False)
-
-
-def decoder_worker(
-    loop: asyncio.AbstractEventLoop, input_q: queue.Queue[tuple[Decoder, JitterFrame, asyncio.Queue]],
-) -> None:
-    while True:
-        task = input_q.get()
-        if task is None:
-            break
-
-        decoder, encoded_frame, output_q = task
-        for frame in decoder.decode(encoded_frame):
-            # print(f"decoded {frame}")
-            # pass the decoded frame to the track
-            asyncio.run_coroutine_threadsafe(output_q.put(frame), loop)
 
 
 class OpusDecoder(Decoder):
@@ -64,7 +49,7 @@ class OpusDecoder(Decoder):
 class PhoneCallProtocolV2_4_4(PhoneCallProtocol):
     __slots__ = (
         "seq", "remote_seq", "endpoints", "stop_event", "ping_task", "jitter_buffer", "worker_thread", "worker_queue",
-        "opus_queue", "opus_decoder",
+        "track",
     )
 
     def __init__(self, client: Client, call: PhoneCall, key: bytes, outgoing: bool) -> None:
@@ -75,13 +60,32 @@ class PhoneCallProtocolV2_4_4(PhoneCallProtocol):
         self.endpoints: list[UdpEndpoint] = []
         self.stop_event = asyncio.Event()
         self.ping_task: asyncio.Task | None = None
-        self.worker_queue = queue.Queue()
-        self.opus_queue = asyncio.Queue()
-        self.opus_decoder = OpusDecoder(60)
+        self.worker_queue: queue.Queue[JitterFrame | None] = queue.Queue()
         self.jitter_buffer = JitterBuffer(capacity=16, prefetch=4)
-        self.worker_thread: Thread = Thread(target=decoder_worker, args=(asyncio.get_running_loop(), self.worker_queue))
+        self.worker_thread: Thread | None = None
+        self.track: PhoneCallIncomingTrack | None = None
+
+    def _decoder_worker(self, loop: asyncio.AbstractEventLoop) -> None:
+        decoder: OpusDecoder | None = None
+
+        while True:
+            encoded_frame = self.worker_queue.get()
+            if encoded_frame is None:
+                break
+            if self.track is None or not self.track.has_readers():
+                continue
+
+            if decoder is None:
+                # Assuming frame duration is always 60ms and never changes
+                decoder = OpusDecoder(60)
+
+            for frame in decoder.decode(encoded_frame):
+                if self.track is None or not self.track.has_readers():
+                    continue
+                asyncio.run_coroutine_threadsafe(self.track.on_new_av_packet(frame), loop)
 
     async def start(self, connections: list[PhoneConnection | PhoneConnectionWebrtc]) -> None:
+        self.worker_thread = Thread(target=self._decoder_worker, args=(asyncio.get_running_loop(),))
         self.worker_thread.start()
 
         for connection in connections:
@@ -123,12 +127,13 @@ class PhoneCallProtocolV2_4_4(PhoneCallProtocol):
 
     async def stop(self) -> None:
         self.stop_event.set()
+        self.worker_queue.put_nowait(None)
 
     async def handle_signaling_update(self, update: UpdatePhoneCallSignalingData) -> None:
         pass
 
-    async def recv_audio(self) -> Frame:
-        return await self.opus_queue.get()
+    def register_track(self, track: PhoneCallIncomingTrack) -> None:
+        self.track = track
 
     async def _req_reflector_peer_self_info(self) -> None:
         await asyncio.gather(*(
@@ -283,18 +288,20 @@ class PhoneCallProtocolV2_4_4(PhoneCallProtocol):
         if isinstance(payload, PacketInit):
             self._send_init_ack()
         elif isinstance(payload, PacketInitAck):
-            for stream in payload.streams:
-                if stream.type == OPUS:
-                    self.opus_decoder.mspf = stream.frame_duration
+            # for stream in payload.streams:
+            #     if stream.type == OPUS:
+            #         self.opus_decoder.mspf = stream.frame_duration
             self._send_init()
         elif isinstance(payload, PacketPing):
             self._send_pong()
         elif isinstance(payload, PacketStreamData):
-            # self.worker_queue.put_nowait((self.opus_decoder, JitterFrame(payload.data, payload.pts), self.opus_queue))
-            # This probably makes sense, idk?
+            # self.worker_queue.put_nowait(JitterFrame(payload.data, payload.pts))
+
+            # This probably makes more sense, idk?
             rtp_packet = RtpPacket(
                 payload_type=111,
-                sequence_number=packet.header.seq,
+                # Assuming frame duration is always 60ms and never changes
+                sequence_number=payload.pts // 60,
                 timestamp=payload.pts,
                 ssrc=payload.stream_id,
                 payload=payload.data,
@@ -302,7 +309,7 @@ class PhoneCallProtocolV2_4_4(PhoneCallProtocol):
             rtp_packet._data = payload.data
             _, frame = self.jitter_buffer.add(rtp_packet)
             if frame is not None:
-                self.worker_queue.put_nowait((self.opus_decoder, frame, self.opus_queue))
+                self.worker_queue.put_nowait(frame)
 
             # if self.sending_audio is None:
             #     if self.opus_frames is None:

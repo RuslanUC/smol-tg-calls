@@ -22,6 +22,7 @@ from ..packets.v2_7_7 import LegacySignalingPacket, CandidatesListMessage, AckMe
     VideoParametersMessage, RemoteMediaStateMessage
 from ..packets.v2_7_7.base import LegacySignalingPacketMessage
 from ..packets.v2_7_7.remote_media_state import RemoteVideoState, RemoteAudioState
+from ..track import PhoneCallIncomingTrack
 
 if TYPE_CHECKING:
     from ..main import PhoneCall
@@ -54,10 +55,17 @@ class FakeDtlsTransport:
         ...
 
 
+class TrackQueue:
+    def __init__(self, track: PhoneCallIncomingTrack) -> None:
+        self.track = track
+
+    async def put(self, item: Frame) -> None:
+        await self.track.on_new_av_packet(item)
+
 class PhoneCallProtocolV2_7_7(PhoneCallProtocol):
     __slots__ = (
         "signaling_seq", "remote_signaling_seq", "transport_seq", "remote_transport_seq", "stop_event", "ping_task",
-        "connection", "connection_init", "connection_connected", "recv_task", "track",
+        "connection", "connection_init", "connection_connected", "recv_task", "rtp_track", "track",
     )
 
     def __init__(self, client: Client, call: PhoneCall, key: bytes, outgoing: bool) -> None:
@@ -71,9 +79,10 @@ class PhoneCallProtocolV2_7_7(PhoneCallProtocol):
         self.connection: aioice.Connection | None = None
         self.connection_init = asyncio.Event()
         self.connection_connected = asyncio.Event()
-        self.track = RemoteStreamTrack("audio")
+        self.rtp_track = RemoteStreamTrack("audio")
         self.ping_task: asyncio.Task | None = None
         self.recv_task: asyncio.Task | None = None
+        self.track: PhoneCallIncomingTrack | None = None
 
     async def start(self, connections: list[PhoneConnection | PhoneConnectionWebrtc]) -> None:
         turn_servers = []
@@ -146,8 +155,9 @@ class PhoneCallProtocolV2_7_7(PhoneCallProtocol):
 
             await self._handle_signaling(packet.payload)
 
-    async def recv_audio(self) -> Frame:
-        return await self.track.recv()
+    def register_track(self, track: PhoneCallIncomingTrack) -> None:
+        self.track = track
+        self.rtp_track._queue = TrackQueue(track)
 
     async def _send_transport(self, packet: LegacySignalingPacket) -> None:
         await self.connection_connected.wait()
@@ -195,7 +205,7 @@ class PhoneCallProtocolV2_7_7(PhoneCallProtocol):
         ))
 
         receiver = RTCRtpReceiver("audio", FakeDtlsTransport())
-        receiver._track = self.track
+        receiver._track = self.rtp_track
         await receiver.receive(RTCRtpReceiveParameters(
             codecs=[
                 RTCRtpCodecParameters(
@@ -233,13 +243,14 @@ class PhoneCallProtocolV2_7_7(PhoneCallProtocol):
                     )
 
                 if isinstance(packet.payload, AudioDataMessage):
-                    if is_payload_rtcp(packet.payload.data):
-                        rtp = RtcpPacket.parse(packet.payload.data)
-                        await receiver._handle_rtcp_packet(rtp)
-                    else:
-                        rtp = RtpPacket.parse(packet.payload.data)
-                        await receiver._handle_rtp_packet(rtp, current_time_ms)
-                    print(f"      rtp: {rtp}")
+                    if self.track is not None and self.track.has_readers():
+                        if is_payload_rtcp(packet.payload.data):
+                            rtp = RtcpPacket.parse(packet.payload.data)
+                            await receiver._handle_rtcp_packet(rtp)
+                        else:
+                            rtp = RtpPacket.parse(packet.payload.data)
+                            await receiver._handle_rtp_packet(rtp, current_time_ms)
+                        print(f"      rtp: {rtp}")
                     # idk = RTP().fromBytearray(bytearray(packet.payload.data))
                     # print(f"      rtp: seq={idk.sequenceNumber}, ssrc={idk.ssrc}, type={idk.payloadType}, payload={idk.payload}")
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 from enum import Enum, auto
 from time import time
 from typing import TYPE_CHECKING, cast
-from hashlib import sha1
 
 from av.frame import Frame
 from pyrogram.raw.functions.phone import AcceptCall, DiscardCall, ConfirmCall
@@ -14,6 +13,7 @@ from pyrogram.types import User
 
 from smol_tg_calls.protocols import PhoneCallProtocolV2_4_4, PhoneCallProtocolV2_7_7
 from smol_tg_calls.protocols.base import PhoneCallProtocol
+from smol_tg_calls.track import PhoneCallIncomingTrack, PhoneCallTrackReader
 from smol_tg_calls.utils import DhValues, prepare_dh
 from smol_tg_calls.utils.dh import DhError
 
@@ -54,6 +54,7 @@ class PhoneCall:
         self._client = _client
         self._dh: DhValues | None = None
         self._protocol: PhoneCallProtocol | None = None
+        self._audio_track = PhoneCallIncomingTrack()
 
     def make_input_call(self) -> InputPhoneCall:
         return InputPhoneCall(
@@ -158,7 +159,8 @@ class PhoneCall:
             return
 
         self._protocol = protocol
+        protocol.register_track(self._audio_track)
         await protocol.start(call.connections)
 
-    async def recv_audio(self) -> Frame:
-        return self._protocol.recv_audio()
+    def get_audio_track(self) -> PhoneCallTrackReader[Frame]:
+        return self._audio_track.new_reader()
