@@ -248,28 +248,6 @@ class PhoneCallProtocolV2_4_4(PhoneCallProtocol):
         to_send = packet_to_send.write(True)
         self._send_to_all(encrypt(to_send, self.key, self.transport_x(False)))
 
-    def _send_audio_frame(self) -> None:
-        assert self.key is not None
-        if self.sending_audio is None or self.opus_frames is None:
-            return
-        if self.sending_audio >= len(self.opus_frames):
-            self.sending_audio = None
-            return
-
-        self._send_stream_data(PacketStreamData(
-            stream_id=1,
-            pts=60 * self.sending_audio,
-            extra_fec=False,
-            keyframe=False,
-            fragment_index=None,
-            fragment_count=None,
-            data=self.opus_frames[self.sending_audio],
-        ))
-
-        self.sending_audio += 1
-
-        asyncio.get_running_loop().call_later(0.060, self._send_audio_frame)
-
     async def _process_packet(self, data: bytes) -> None:
         assert self.key is not None
 
@@ -310,15 +288,6 @@ class PhoneCallProtocolV2_4_4(PhoneCallProtocol):
             _, frame = self.jitter_buffer.add(rtp_packet)
             if frame is not None:
                 self.worker_queue.put_nowait(frame)
-
-            # if self.sending_audio is None:
-            #     if self.opus_frames is None:
-            #         print("Loading opus frames...")
-            #         self.opus_frames = await asyncio.to_thread(_load_opus, "audio-mono.wav", 60)
-            #     self.sending_audio = 0
-            #     asyncio.get_running_loop().call_later(0.060, self._send_audio_frame)
-            ...
-            # self._send_stream_data(payload)
 
     async def _ping_loop(self) -> None:
         while not self.stop_event.is_set():
